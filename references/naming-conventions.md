@@ -1,102 +1,135 @@
 # Naming Conventions
 
-These rules apply to every DBMS. Names are written in uppercase in the design and in the DDL. Each DBMS file explains how to keep the uppercase form; for example, PostgreSQL needs quoted identifiers.
+These rules apply to every vendor. The examples are lowercase, which is the default project case. In an uppercase project, write the same names in uppercase (`M_CUSTOMER`, `I_CUSTOMER_ID`, `PK_M_CUSTOMER`); nothing else changes.
 
-## 1. Characters and length (N1, N5)
+## 1. Characters, case and length (N1, N5)
 
-- Use only `A–Z`, `0–9` and `_`. A name starts with a letter and has no `__` and no trailing `_`.
-- Separate words with `_`. Use English words in the singular: `M_PRODUCT`, not `M_PRODUCTS`.
-- Table and column names are at most 30 characters, including the prefix. Constraint, index and other object names are at most 63 characters.
-- Use at most 3 words after the prefix where possible. If a name feels long, use an approved abbreviation or a shorter word with the same meaning (`T_STOCK_MOVE` rather than `T_STOCK_MOVEMENT`). Do not invent abbreviations.
+- Use only letters of the project case, `0–9` and `_`. A name starts with a letter and has no spaces, no `__` and no trailing `_`. Replace spaces with `_`.
+- **One case for the whole database.** Never mix `m_customer` and `M_ORDER`, or `i_` and `I_`.
+- Use English words in the singular: `m_product`, not `m_products`.
+- Table and column names are at most 30 characters, including the prefix. Constraint, index and other object names are at most 63 characters. Both limits fit every supported vendor.
+- Use at most 3 words after the prefix where possible. If a name is long, use an approved abbreviation or a shorter word with the same meaning (`t_stock_move` rather than `t_stock_movement`).
 
 ### Approved abbreviations
 
-Use these and no others. Use them the same way everywhere.
+Use these and no others, the same way everywhere. To add one, revise this list first.
 
-| Abbreviation | Meaning | Abbreviation | Meaning |
+| Abbr. | Meaning | Abbr. | Meaning |
 |---|---|---|---|
-| `ID` | identifier (string key) | `DESC` | description |
-| `NO` | number within a parent, or document number | `ADDR` | address |
-| `AMT` | amount of money | `TEL` | telephone |
-| `QTY` | quantity | `CCY` | ISO 4217 currency code |
-| `SEQ` | counter or sequence | `SEC` | seconds (durations) |
-| `HIST` | history table | | |
+| `id` | identifier (string key) | `nm` | name |
+| `no` | number within a parent, or a document number | `desc` | description |
+| `amt` | amount of money | `addr` | address |
+| `qty` | quantity | `tel` | telephone |
+| `seq` | counter or sequence | `ccy` | ISO 4217 currency code |
+| `sec` | seconds (durations) | `func` | function (program function) |
+| `hist` | history | `usr` | user |
+| `ord` | order | `pkg` | package |
 
-`DESC`, `NO` and similar words are SQL reserved words or keywords on their own. That is why the `I_` prefix is mandatory: `I_DESC` is always a safe name.
+`desc`, `no` and similar words are reserved words on their own. The `i_` prefix is what makes `i_desc` and `i_no` safe.
 
 ## 2. Tables (N2, N3)
 
 | Pattern | Use | Example |
 |---|---|---|
-| `M_<ENTITY>` | Master: reference data, business entities, configuration | `M_CUSTOMER`, `M_PAYMENT_METHOD` |
-| `T_<EVENT>` | Transaction: events, activities, operational records | `T_STOCK_MOVE` |
-| `T_<EVENT>_H` / `T_<EVENT>_D` | Header and detail of one transaction | `T_INVOICE_H`, `T_INVOICE_D` |
-| `T_<EVENT>_<CHILD>_D` | A second child collection, or a detail of a detail | `T_INVOICE_PAY_D`, `T_INVOICE_LOT_D` |
-| `M_<A>_<B>` | Junction between masters | `M_PRODUCT_CATEGORY` |
+| `m_<entity>` | Master: reference data, business entities, configuration | `m_customer`, `m_payment_method` |
+| `t_<event>` | Transaction: events, activities, operational records | `t_stock_move` |
+| `t_<event>_h` / `t_<event>_d` | Header and detail of one transaction | `t_invoice_h`, `t_invoice_d` |
+| `t_<event>_<child>_d` | A second child collection, or a detail of a detail | `t_invoice_pay_d`, `t_invoice_lot_d` |
+| `m_<a>_<b>` | Junction between masters | `m_product_category` |
 
-Some tables don't obviously fit. Classify them like this:
+**Suffixes (N3).** `_h` and `_d` are the only suffixes with a structural meaning. The last word of an ordinary name, as in `t_login_log` or `t_price_hist`, is part of the name, not a suffix. Never end a table that is not a header in `_h`, or one that is not a detail in `_d`.
 
-- **Junction tables** take the class of what they link. Two masters linked together give an `M_` table. A link that records an event gives a `T_` table.
-- **Logs, audit history, imports and staging** record events or work, so they are `T_` (`T_LOGIN_LOG`, `T_PRICE_HIST`).
-- **Lookup lists, settings and counters** are configuration, so they are `M_` (`M_DOC_SEQ`).
-- **A master with line items**, such as a price list with its prices, is still a master. It may use `_H`/`_D` under the same key rules: `M_PRICE_LIST_H`, `M_PRICE_LIST_D`.
+Tables that don't obviously fit:
+
+- **Junction tables** take the class of what they link. Two masters linked together give an `m_` table. A link that records an event gives a `t_` table.
+- **Logs, audit history, imports and staging** record events or work, so they are `t_` (`t_login_log`, `t_price_hist`).
+- **Lookup lists, settings and counters** are configuration, so they are `m_` (`m_id_seq`).
+- **A master with line items**, such as a price list and its prices, is still a master. It may use `_h`/`_d` under the same key rules: `m_price_list_h`, `m_price_list_d`.
 
 ## 3. Columns (N4, N5)
 
-Every column starts with `I_`. The name is built as `I_<WORDS>[_<SUFFIX>]`, and the suffix tells you what kind of data the column holds.
+Every column starts with `i_`. The name is `i_<words>[_<suffix>]`, and the suffix tells you what kind of data the column holds.
 
 | Suffix / form | Meaning | Logical type | Example |
 |---|---|---|---|
-| `_ID` | String key of an entity | `ID(n)` | `I_CUSTOMER_ID` |
-| `I_INTERNAL_NO`, `I_SUB_NO` | Line number within a parent | `LINENO` | `000001` |
-| `_NO` (other) | Business number that is not a key | `CODE(n)` | `I_TAX_NO` |
-| `_AT` | Instant in Unix seconds | `UNIXTIME` | `I_INVOICE_AT` |
-| `_DATE` | Calendar date (00:00 UTC) | `UNIXDATE` | `I_DUE_DATE` |
-| `_TIME` | Time of day in seconds (0–86399) | `TIMEOFDAY` | `I_OPEN_TIME` |
-| `_SEC` | Duration in seconds | `DURATION` | `I_WAIT_SEC` |
-| `_AMT` | Money | `AMOUNT` | `I_TOTAL_AMT` |
-| `_QTY` / `I_QTY` | Quantity | `QTY` | `I_QTY` |
-| `_PRICE` | Unit price | `AMOUNT` | `I_UNIT_PRICE` |
-| `_RATE` | Ratio (0.07 = 7%) | `RATE` | `I_TAX_RATE` |
-| `_NAME` | Display name | `TEXT(n)` | `I_CUSTOMER_NAME` |
-| `I_IS_…`, `I_HAS_…` | Boolean | `FLAG` | `I_IS_ACTIVE` |
-| `I_STATUS` | Lifecycle state | `CODE(20)` | `COMPLETED` |
-| `I_DESC`, `I_NOTE` | Free text | `TEXT(n)` | — |
+| `_id` | String key of an entity | `string(20) ascii` | `i_customer_id` |
+| `i_internal_no`, `i_sub_no` | Line number within a parent | `string(6) ascii` | `000001` |
+| `_no` (other) | Business number that is not a key | `string(n) ascii` | `i_tax_no` |
+| Code (no suffix) | A code named for what it is | `string(n) ascii` | `i_status`, `i_ccy`, `i_sku` |
+| `_at` | Instant in Unix seconds | `timestamp` | `i_invoice_at` |
+| `_date` | Calendar date (00:00 UTC, Unix seconds) | `timestamp` | `i_due_date` |
+| `_time` | Time of day in seconds (0–86399) | `int` | `i_open_time` |
+| `_sec` | Duration in seconds | `long` | `i_wait_sec` |
+| `_amt` | Money | `decimal(19,4)` | `i_total_amt` |
+| `_qty` / `i_qty` | Quantity | `decimal(19,4)` | `i_qty` |
+| `_price` | Unit price | `decimal(19,4)` | `i_unit_price` |
+| `_rate` | Ratio (0.07 = 7%) | `decimal(9,6)` | `i_tax_rate` |
+| `_nm` | Display name | `string(n)` | `i_customer_nm` |
+| `i_is_…`, `i_has_…` | Boolean | `boolean` | `i_is_taxable` |
+| `i_active` | Active / soft-delete flag | `boolean` | — |
+| `i_status` | Lifecycle state | `string(20) ascii` | `completed` |
+| `i_desc`, `i_note` | Free text | `string(n)` | — |
 
 Further column rules:
 
-- **PK column:** `I_<ENTITY>_ID`, where `ENTITY` is the table name without `M_`/`T_` and without `_H`/`_D`. So `T_INVOICE_H` has `I_INVOICE_ID`, and `M_PAYMENT_METHOD` has `I_PAYMENT_METHOD_ID`.
-- **FK column:** the same name as the PK it references (`I_CUSTOMER_ID` in `T_INVOICE_H`). When one table references the same parent twice, or the meaning differs, put a role word in front: `I_FROM_WAREHOUSE_ID`, `I_TO_WAREHOUSE_ID`.
-- **Don't repeat the table name** in non-key columns unless the name would be unclear without it. `M_CUSTOMER.I_CUSTOMER_NAME` is fine because `I_NAME` would be ambiguous in joins and views. Avoid `T_INVOICE_H.I_INVOICE_STATUS`; use `I_STATUS`.
-- **Audit columns** are always named `I_CREATED_AT`, `I_CREATED_BY`, `I_UPDATED_AT`, `I_UPDATED_BY`, and `I_DELETED_AT` for soft delete.
+- **PK column:** `i_<entity>_id`, where `entity` is the table name without `m_`/`t_` and without `_h`/`_d`. So `t_invoice_h` has `i_invoice_id`, and `m_payment_method` has `i_payment_method_id`.
+- **FK column:** the same name as the PK it references (`i_customer_id` in `t_invoice_h`). When one table references the same parent twice, or the meaning differs, put a role word in front: `i_from_warehouse_id`, `i_to_warehouse_id`.
+- **Don't repeat the table name** in non-key columns unless the name would be unclear without it. `m_customer.i_customer_nm` is fine because `i_nm` would be ambiguous in joins and views. Avoid `t_invoice_h.i_invoice_status`; use `i_status`.
+- **Audit and active columns** always have exactly these names: `i_created_at`, `i_created_func_nm`, `i_created_by`, `i_updated_at`, `i_updated_func_nm`, `i_updated_by`, `i_active`.
 
 ## 4. Constraints, indexes and other objects (N6)
 
-`<TABLE>` is the full table name. `<COLS>` is the column names without `I_`, joined by `_`. `<PARENT>` is the referenced table name without its `M_`/`T_` prefix.
+`<table>` is the full table name. `<cols>` is the column names without `i_`, joined by `_`. `<parent>` is the referenced table name without its `m_`/`t_` prefix.
 
 | Object | Pattern | Example |
 |---|---|---|
-| Primary key | `PK_<TABLE>` | `PK_T_INVOICE_D` |
-| Foreign key | `FK_<TABLE>_<PARENT>`; when the same parent is referenced twice, `FK_<TABLE>_<ROLE>_<PARENT>` | `FK_T_INVOICE_D_INVOICE_H`, `FK_T_STOCK_MOVE_FROM_WAREHOUSE` |
-| Unique | `UQ_<TABLE>_<COLS>` | `UQ_M_PRODUCT_SKU` |
-| Index | `IX_<TABLE>_<COLS>` | `IX_T_INVOICE_H_CUSTOMER_ID` |
-| Check | `CK_<TABLE>_<COLS>`, or `CK_<TABLE>_<RULE>` when one check covers several columns | `CK_T_INVOICE_D_QTY`, `CK_T_STOCK_MOVE_WAREHOUSE` |
-| Default (SQL Server) | `DF_<TABLE>_<COLS>` | `DF_M_CUSTOMER_CREATED_AT` |
-| Sequence | `SQ_<TABLE>` | `SQ_M_CUSTOMER` |
-| View | `V_<NAME>` | `V_INVOICE_SUMMARY` |
-| Trigger | `TR_<TABLE>_<EVENT>` (`INS`, `UPD`, `DEL`) | `TR_T_INVOICE_H_UPD` |
-| Procedure | `P_<VERB>_<NOUN>` | `P_NEXT_DOC_ID` |
-| Function | `FN_<NAME>` | `FN_NEXT_DOC_ID` |
+| Primary key | `pk_<table>` | `pk_t_invoice_d` |
+| Foreign key | `fk_<table>_<parent>`; when the same parent is referenced twice, `fk_<table>_<role>_<parent>` | `fk_t_invoice_d_invoice_h`, `fk_t_stock_move_from_warehouse` |
+| Unique | `uq_<table>_<cols>` | `uq_m_product_sku` |
+| Index | `ix_<table>_<cols>` | `ix_t_invoice_h_customer_id` |
+| Check | `ck_<table>_<cols>`, or `ck_<table>_<rule>` when one check covers several columns | `ck_t_invoice_d_qty`, `ck_t_stock_move_warehouse` |
+| Default (SQL Server) | `df_<table>_<cols>` | `df_m_customer_created_at` |
+| Sequence | `sq_<table>` | `sq_m_customer` |
+| View | `v_<name>` | `v_m_customer` (active rows) |
+| Trigger | `tr_<table>_<event>` (`ins`, `upd`, `del`) | `tr_t_invoice_h_upd` |
+| Procedure | `p_<verb>_<noun>` | `p_next_id` |
+| Function | `fn_<name>` | `fn_next_id` |
 
-Do not start SQL Server procedures with `SP_`: SQL Server checks the `master` database first for names beginning `sp_`. Object names include the table name because some DBMSs require constraint and index names to be unique across the whole schema.
+Do not start SQL Server procedures with `sp_`: SQL Server looks in the `master` database first for those names. Object names include the table name because PostgreSQL, Oracle and SQLite require index and constraint names to be unique across the whole schema.
 
-If a name would exceed 63 characters, shorten `<COLS>` with approved abbreviations or keep only the first column. Never truncate a name in the middle of a word.
+If a name would exceed 63 characters, shorten `<cols>` with approved abbreviations or keep only the first column. Never cut a word in half.
 
-## 5. Quick check
+## 5. Reserved words and quoting (N7)
 
-- [ ] Uppercase, `A–Z0-9_`, starts with a letter, no `__` or trailing `_`
-- [ ] Table has `M_` or `T_`, chosen by purpose; header and detail have `_H`/`_D`
-- [ ] Every column starts with `I_` and has the right suffix for its type
+**Reserved words.** Every table starts with `m_` or `t_`, every column with `i_`, and every other object with one of the prefixes in section 4. No vendor reserves a word with those prefixes, so names built by these rules never collide with a keyword. Check by hand only names that break the pattern: schema or database names, and any approved deviation. Use the vendors' own keyword lists:
+
+| Vendor | Keyword list |
+|---|---|
+| SQL Server | "Reserved Keywords (Transact-SQL)" in the Microsoft docs |
+| PostgreSQL | Appendix C "SQL Key Words" |
+| MySQL / MariaDB | "Keywords and Reserved Words" / "Reserved Words" |
+| Oracle | `SELECT keyword FROM v$reserved_words WHERE reserved = 'Y'` |
+| SQLite | "SQL As Understood By SQLite: SQLite Keywords" |
+
+**Quoting.** Write names unquoted unless the vendor needs quotes to keep the project case:
+
+| Vendor | Lowercase project | Uppercase project |
+|---|---|---|
+| SQL Server | Unquoted. Names are stored as written | Unquoted |
+| PostgreSQL | Unquoted. Unquoted names fold to lowercase | **Quote every name, everywhere**: `"M_CUSTOMER"` |
+| MySQL / MariaDB | Unquoted. Lowercase works on every `lower_case_table_names` setting | Unquoted, with `lower_case_table_names = 0` on every server, including Windows and macOS. Otherwise names become lowercase |
+| Oracle | Unquoted. Oracle stores unquoted names in uppercase and matches them without regard to case, so `m_customer` and `M_CUSTOMER` are the same name. Never quote, or the name becomes case-sensitive | Unquoted |
+| SQLite | Unquoted. Names are matched without regard to case | Unquoted |
+
+When quoting is needed, configure the ORM or query builder to quote every identifier. Mixing quoted and unquoted forms creates two objects or fails with "does not exist".
+
+## 6. Quick check
+
+- [ ] Project case only, `a–z0-9_` (or `A–Z0-9_`), starts with a letter, no spaces, `__` or trailing `_`
+- [ ] Table has `m_` or `t_`, chosen by purpose; only headers end in `_h` and only details end in `_d`
+- [ ] Every column starts with `i_` and has the right suffix for its type
 - [ ] Table and column names ≤ 30, object names ≤ 63; only approved abbreviations
+- [ ] All six audit columns and `i_active` have their exact names
 - [ ] FK columns have the same name as the referenced PK, or a role word plus that name
 - [ ] Constraint and index names follow section 4
+- [ ] No name is a reserved word; quoting follows section 5 for every target vendor

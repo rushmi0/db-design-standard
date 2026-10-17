@@ -6,24 +6,21 @@ Requires SQL Server **2016 or later** (`DATEDIFF_BIG`, `AT TIME ZONE`) or Azure 
 
 | Logical | SQL Server | Notes |
 |---|---|---|
-| `ID(n)` | `VARCHAR(n) COLLATE Latin1_General_100_BIN2` | Binary collation: exact, case-sensitive comparison (K2) |
-| `LINENO` | `VARCHAR(6) COLLATE Latin1_General_100_BIN2` | |
-| `CODE(n)` | `VARCHAR(n) COLLATE Latin1_General_100_BIN2` | Rejects lowercase in CHECKs and `IN` lists |
-| `TEXT(n)` | `NVARCHAR(n)` (n ≤ 4000), else `NVARCHAR(MAX)` | Unicode, counted in UTF-16 units. Thai and other common scripts are 1 unit per character. Database default collation |
-| `FLAG` | `CHAR(1) COLLATE Latin1_General_100_BIN2` + CHECK `IN ('Y','N')` | |
-| `UNIXTIME`, `UNIXDATE` | `BIGINT` | |
-| `TIMEOFDAY` | `INT` + CHECK `BETWEEN 0 AND 86399` | |
-| `DURATION` | `BIGINT` + CHECK `>= 0` | |
-| `AMOUNT`, `QTY` | `DECIMAL(19,4)` | Never `MONEY`, `FLOAT` or `REAL` |
-| `RATE` | `DECIMAL(9,6)` | |
-| `COUNT` | `INT` | Never a key |
+| `string(n)` | `NVARCHAR(n)`; `NVARCHAR(MAX)` above 4000 | Unicode (UTF-16); Thai, Japanese and Chinese are 1 unit per character. Database default collation. Literals need the `N` prefix: `N'東京倉庫'` |
+| `string(n) ascii` | `VARCHAR(n) COLLATE Latin1_General_100_BIN2` | Binary collation: exact, case-sensitive comparison (K2). Half the size of `NVARCHAR` in keys and indexes |
+| `int` | `INT` | |
+| `long` | `BIGINT` | |
+| `boolean` | `BIT` | `1` = true, `0` = false. Accepts no other values, so no CHECK is needed |
+| `decimal(p,s)` | `DECIMAL(p,s)` | Never `MONEY`, `FLOAT` or `REAL` |
+| `timestamp` | `BIGINT` | Unix seconds. Never `DATETIME`, `DATETIME2`, `DATE` or the `TIMESTAMP`/`ROWVERSION` type |
 
-Every column that takes part in a PK/FK pair must use exactly the same type, length and collation (K3). SQL Server rejects an FK when they differ.
+Every column in a PK/FK pair uses exactly the same type, length and collation (K3); SQL Server rejects the FK otherwise. Never use `IDENTITY` (K1).
 
-## 2. Names
-- SQL Server stores names in the case they are written, so write all DDL and queries in uppercase. Brackets are never needed, because the `M_`/`T_`/`I_` prefixes avoid reserved words.
-- Constraint names must be unique per schema; the `PK_<TABLE>` / `FK_<TABLE>_…` patterns ensure this.
-- Use `P_` for procedures, never `SP_`.
+## 2. Names and quoting
+- SQL Server stores names in the case they are written. Write them unquoted, in the project case; brackets are never needed because the `m_`/`t_`/`i_` prefixes avoid reserved words.
+- With the usual case-insensitive database collation, `m_customer` and `M_CUSTOMER` refer to the same object. A case-sensitive database collation makes the case significant, so write names exactly in the project case everywhere.
+- Constraint names must be unique per schema; the `pk_<table>` / `fk_<table>_…` patterns ensure this. Name limit: 128 characters.
+- Use `p_` for procedures, never `sp_`.
 
 ## 3. Unix time (seconds)
 
@@ -32,222 +29,292 @@ Every column that takes part in a PK/FK pair must use exactly the same type, len
 | Now | `DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())` (rounds down for dates after 1970) |
 | UTC `DATETIME2` → Unix | `DATEDIFF_BIG(SECOND, '19700101', @utc_dt)` |
 | Unix → UTC `DATETIME2` (safe after 2038) | `DATEADD(SECOND, CAST(@u % 86400 AS INT), DATEADD(DAY, CAST(@u / 86400 AS INT), CAST('19700101' AS DATETIME2(0))))` |
-| `DATE` → `_DATE` value | `DATEDIFF_BIG(SECOND, '19700101', CAST(@d AS DATETIME2(0)))` |
-| `_DATE` value → `DATE` | `DATEADD(DAY, CAST(@u / 86400 AS INT), CAST('19700101' AS DATE))` |
+| `DATE` → `_date` value | `DATEDIFF_BIG(SECOND, '19700101', CAST(@d AS DATETIME2(0)))` |
+| `_date` value → `DATE` | `DATEADD(DAY, CAST(@u / 86400 AS INT), CAST('19700101' AS DATE))` |
 | Start of a local business day | `DATEDIFF_BIG(SECOND, CAST('1970-01-01T00:00:00+00:00' AS DATETIMEOFFSET), CAST(@d AS DATETIME2(0)) AT TIME ZONE 'SE Asia Standard Time')` |
+| Business date for an ID | `CONVERT(CHAR(8), CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'SE Asia Standard Time' AS DATE), 112)` |
 
 - `DATEADD` accepts only `INT` seconds. A plain `DATEADD(SECOND, @u, '19700101')` fails after 2038-01-19, so always split the value into days plus seconds as shown.
 - `AT TIME ZONE` uses Windows time-zone names. Bangkok is `'SE Asia Standard Time'`; the list is in `sys.time_zone_info`.
-- For a local business day, query with `I_X_AT >= @start AND I_X_AT < @start + 86400`.
+- For a local business day, query with `i_x_at >= @start AND i_x_at < @start + 86400`.
 
 ## 4. CHECK patterns
 
-SQL Server ignores trailing spaces in `=` comparisons and in `LEN()`. That means `'CUS000001 '` would collide with `'CUS000001'` instead of being rejected, so every ID and CODE check also compares `DATALENGTH` (which counts trailing spaces) with the expected length:
+SQL Server ignores trailing spaces in `=` comparisons and in `LEN()`. `'cus000001 '` would then collide with `'cus000001'` instead of being rejected, so every ASCII check also compares `DATALENGTH`, which counts trailing spaces:
 
 ```sql
 -- Fixed-format ID: prefix + digits
-CHECK (DATALENGTH(I_CUSTOMER_ID) = 9 AND I_CUSTOMER_ID LIKE 'CUS[0-9][0-9][0-9][0-9][0-9][0-9]')
--- Any ID: A-Z, 0-9 only, no spaces, not empty
-CHECK (LEN(I_DOC_SEQ_ID) > 0 AND DATALENGTH(I_DOC_SEQ_ID) = LEN(I_DOC_SEQ_ID) AND I_DOC_SEQ_ID NOT LIKE '%[^A-Z0-9]%')
--- Code: A-Z, 0-9, _ and -
-CHECK (LEN(I_SKU) > 0 AND DATALENGTH(I_SKU) = LEN(I_SKU) AND I_SKU NOT LIKE '%[^A-Z0-9_-]%')
+CHECK (DATALENGTH(i_customer_id) = 9 AND i_customer_id LIKE 'cus[0-9][0-9][0-9][0-9][0-9][0-9]')
+-- Business code: A-Z, a-z, 0-9, _ and -; no spaces, not empty
+CHECK (LEN(i_sku) > 0 AND DATALENGTH(i_sku) = LEN(i_sku) AND i_sku NOT LIKE '%[^A-Za-z0-9_-]%')
 -- Calendar date
-CHECK (I_DUE_DATE % 86400 = 0)
+CHECK (i_due_date % 86400 = 0)
 ```
 
-The ranges `[A-Z]` and `[0-9]` follow code-point order only because the column uses a `_BIN2` collation. Keep that collation on every ID and CODE column.
+The ranges `[a-z]` and `[0-9]` follow code-point order only because the column uses a `_BIN2` collation; under a case-insensitive collation `[a-z]` also matches uppercase. Keep the binary collation on every ASCII column.
 
 ## 5. Example schema (compliant)
 
-This example system has no user accounts, so the `_BY` audit columns are omitted (D1).
+The data-access layer supplies the `func_nm` and `by` audit values on every insert; the timestamps also have database defaults as a safety net.
 
 ```sql
-CREATE SEQUENCE SQ_M_CUSTOMER  AS INT START WITH 1 MINVALUE 1 MAXVALUE 999999 NO CYCLE;
-CREATE SEQUENCE SQ_M_PRODUCT   AS INT START WITH 1 MINVALUE 1 MAXVALUE 999999 NO CYCLE;
-CREATE SEQUENCE SQ_M_WAREHOUSE AS INT START WITH 1 MINVALUE 1 MAXVALUE 999999 NO CYCLE;
-
--- Counter for document IDs (configuration -> master)
-CREATE TABLE M_DOC_SEQ (
-    I_DOC_SEQ_ID  VARCHAR(20) COLLATE Latin1_General_100_BIN2 NOT NULL,
-    I_LAST_VAL    INT    NOT NULL,
-    I_CREATED_AT  BIGINT NOT NULL CONSTRAINT DF_M_DOC_SEQ_CREATED_AT DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
-    I_UPDATED_AT  BIGINT NOT NULL CONSTRAINT DF_M_DOC_SEQ_UPDATED_AT DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
-    CONSTRAINT PK_M_DOC_SEQ PRIMARY KEY (I_DOC_SEQ_ID),
-    CONSTRAINT CK_M_DOC_SEQ_DOC_SEQ_ID CHECK (LEN(I_DOC_SEQ_ID) > 0 AND DATALENGTH(I_DOC_SEQ_ID) = LEN(I_DOC_SEQ_ID) AND I_DOC_SEQ_ID NOT LIKE '%[^A-Z0-9]%'),
-    CONSTRAINT CK_M_DOC_SEQ_LAST_VAL CHECK (I_LAST_VAL >= 0)
+-- Counter for IDs (configuration -> master)
+CREATE TABLE m_id_seq (
+    i_id_seq_id        VARCHAR(20)  COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_last_val         BIGINT       NOT NULL,
+    i_created_at       BIGINT       NOT NULL CONSTRAINT df_m_id_seq_created_at DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
+    i_created_func_nm  VARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_created_by       VARCHAR(50)  COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_updated_at       BIGINT       NOT NULL CONSTRAINT df_m_id_seq_updated_at DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
+    i_updated_func_nm  VARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_updated_by       VARCHAR(50)  COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_active           BIT          NOT NULL CONSTRAINT df_m_id_seq_active DEFAULT (1),
+    CONSTRAINT pk_m_id_seq PRIMARY KEY (i_id_seq_id),
+    CONSTRAINT ck_m_id_seq_id_seq_id CHECK (LEN(i_id_seq_id) >= 2 AND DATALENGTH(i_id_seq_id) = LEN(i_id_seq_id)
+        AND i_id_seq_id LIKE '[a-z][a-z]%' AND i_id_seq_id NOT LIKE '%[^a-z0-9]%'),
+    CONSTRAINT ck_m_id_seq_last_val CHECK (i_last_val >= 0)
 );
 
--- Master
-CREATE TABLE M_CUSTOMER (
-    I_CUSTOMER_ID    VARCHAR(20)   COLLATE Latin1_General_100_BIN2 NOT NULL,
-    I_CUSTOMER_NAME  NVARCHAR(200) NOT NULL,
-    I_TAX_NO         VARCHAR(30)   COLLATE Latin1_General_100_BIN2 NULL,  -- NULL = not registered for tax
-    I_IS_ACTIVE      CHAR(1)       COLLATE Latin1_General_100_BIN2 NOT NULL CONSTRAINT DF_M_CUSTOMER_IS_ACTIVE DEFAULT ('Y'),
-    I_CREATED_AT     BIGINT NOT NULL CONSTRAINT DF_M_CUSTOMER_CREATED_AT DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
-    I_UPDATED_AT     BIGINT NOT NULL CONSTRAINT DF_M_CUSTOMER_UPDATED_AT DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
-    CONSTRAINT PK_M_CUSTOMER PRIMARY KEY (I_CUSTOMER_ID),
-    CONSTRAINT CK_M_CUSTOMER_CUSTOMER_ID CHECK (DATALENGTH(I_CUSTOMER_ID) = 9 AND I_CUSTOMER_ID LIKE 'CUS[0-9][0-9][0-9][0-9][0-9][0-9]'),
-    CONSTRAINT CK_M_CUSTOMER_TAX_NO CHECK (LEN(I_TAX_NO) > 0 AND DATALENGTH(I_TAX_NO) = LEN(I_TAX_NO) AND I_TAX_NO NOT LIKE '%[^A-Z0-9_-]%'),
-    CONSTRAINT CK_M_CUSTOMER_IS_ACTIVE CHECK (I_IS_ACTIVE IN ('Y', 'N'))
+-- Master, ID without a date part: cus + 6 digits
+CREATE TABLE m_customer (
+    i_customer_id      VARCHAR(20)   COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_customer_nm      NVARCHAR(200) NOT NULL,
+    i_tax_no           VARCHAR(30)   COLLATE Latin1_General_100_BIN2 NULL,  -- NULL = not registered for tax
+    i_created_at       BIGINT        NOT NULL CONSTRAINT df_m_customer_created_at DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
+    i_created_func_nm  VARCHAR(100)  COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_created_by       VARCHAR(50)   COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_updated_at       BIGINT        NOT NULL CONSTRAINT df_m_customer_updated_at DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
+    i_updated_func_nm  VARCHAR(100)  COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_updated_by       VARCHAR(50)   COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_active           BIT           NOT NULL CONSTRAINT df_m_customer_active DEFAULT (1),
+    CONSTRAINT pk_m_customer PRIMARY KEY (i_customer_id),
+    CONSTRAINT ck_m_customer_customer_id CHECK (DATALENGTH(i_customer_id) = 9
+        AND i_customer_id LIKE 'cus[0-9][0-9][0-9][0-9][0-9][0-9]'),
+    CONSTRAINT ck_m_customer_tax_no CHECK (LEN(i_tax_no) > 0 AND DATALENGTH(i_tax_no) = LEN(i_tax_no)
+        AND i_tax_no NOT LIKE '%[^A-Za-z0-9_-]%')
 );
 
--- Master with soft delete and a changeable business code
-CREATE TABLE M_PRODUCT (
-    I_PRODUCT_ID    VARCHAR(20)   COLLATE Latin1_General_100_BIN2 NOT NULL,
-    I_SKU           VARCHAR(30)   COLLATE Latin1_General_100_BIN2 NOT NULL,
-    I_PRODUCT_NAME  NVARCHAR(200) NOT NULL,
-    I_UNIT_PRICE    DECIMAL(19,4) NOT NULL,
-    I_CREATED_AT    BIGINT NOT NULL CONSTRAINT DF_M_PRODUCT_CREATED_AT DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
-    I_UPDATED_AT    BIGINT NOT NULL CONSTRAINT DF_M_PRODUCT_UPDATED_AT DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
-    I_DELETED_AT    BIGINT NULL,  -- NULL = active
-    CONSTRAINT PK_M_PRODUCT PRIMARY KEY (I_PRODUCT_ID),
-    CONSTRAINT CK_M_PRODUCT_PRODUCT_ID CHECK (DATALENGTH(I_PRODUCT_ID) = 9 AND I_PRODUCT_ID LIKE 'PRD[0-9][0-9][0-9][0-9][0-9][0-9]'),
-    CONSTRAINT CK_M_PRODUCT_SKU CHECK (LEN(I_SKU) > 0 AND DATALENGTH(I_SKU) = LEN(I_SKU) AND I_SKU NOT LIKE '%[^A-Z0-9_-]%'),
-    CONSTRAINT CK_M_PRODUCT_UNIT_PRICE CHECK (I_UNIT_PRICE >= 0)
-);
--- SKU unique among active products only
-CREATE UNIQUE INDEX UQ_M_PRODUCT_SKU ON M_PRODUCT (I_SKU) WHERE I_DELETED_AT IS NULL;
-
-CREATE TABLE M_WAREHOUSE (
-    I_WAREHOUSE_ID    VARCHAR(20)   COLLATE Latin1_General_100_BIN2 NOT NULL,
-    I_WAREHOUSE_NAME  NVARCHAR(200) NOT NULL,
-    I_OPEN_TIME       INT NOT NULL,   -- seconds after local midnight
-    I_CLOSE_TIME      INT NOT NULL,
-    I_CREATED_AT      BIGINT NOT NULL CONSTRAINT DF_M_WAREHOUSE_CREATED_AT DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
-    I_UPDATED_AT      BIGINT NOT NULL CONSTRAINT DF_M_WAREHOUSE_UPDATED_AT DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
-    CONSTRAINT PK_M_WAREHOUSE PRIMARY KEY (I_WAREHOUSE_ID),
-    CONSTRAINT CK_M_WAREHOUSE_WAREHOUSE_ID CHECK (DATALENGTH(I_WAREHOUSE_ID) = 8 AND I_WAREHOUSE_ID LIKE 'WH[0-9][0-9][0-9][0-9][0-9][0-9]'),
-    CONSTRAINT CK_M_WAREHOUSE_OPEN_TIME CHECK (I_OPEN_TIME BETWEEN 0 AND 86399),
-    CONSTRAINT CK_M_WAREHOUSE_CLOSE_TIME CHECK (I_CLOSE_TIME BETWEEN 0 AND 86399)
+-- Master, monthly ID: prd + yyyymm + 4 digits; changeable business code in its own column
+CREATE TABLE m_product (
+    i_product_id       VARCHAR(20)   COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_sku              VARCHAR(30)   COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_product_nm       NVARCHAR(200) NOT NULL,
+    i_unit_price       DECIMAL(19,4) NOT NULL,
+    i_is_taxable       BIT           NOT NULL CONSTRAINT df_m_product_is_taxable DEFAULT (1),
+    i_created_at       BIGINT        NOT NULL CONSTRAINT df_m_product_created_at DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
+    i_created_func_nm  VARCHAR(100)  COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_created_by       VARCHAR(50)   COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_updated_at       BIGINT        NOT NULL CONSTRAINT df_m_product_updated_at DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
+    i_updated_func_nm  VARCHAR(100)  COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_updated_by       VARCHAR(50)   COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_active           BIT           NOT NULL CONSTRAINT df_m_product_active DEFAULT (1),
+    CONSTRAINT pk_m_product PRIMARY KEY (i_product_id),
+    CONSTRAINT uq_m_product_sku UNIQUE (i_sku),   -- unique for all time (default)
+    CONSTRAINT ck_m_product_product_id CHECK (DATALENGTH(i_product_id) = 13
+        AND i_product_id LIKE 'prd[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'),
+    CONSTRAINT ck_m_product_sku CHECK (LEN(i_sku) > 0 AND DATALENGTH(i_sku) = LEN(i_sku)
+        AND i_sku NOT LIKE '%[^A-Za-z0-9_-]%'),
+    CONSTRAINT ck_m_product_unit_price CHECK (i_unit_price >= 0)
 );
 
--- Header
-CREATE TABLE T_INVOICE_H (
-    I_INVOICE_ID   VARCHAR(20)   COLLATE Latin1_General_100_BIN2 NOT NULL,
-    I_INVOICE_AT   BIGINT        NOT NULL,
-    I_DUE_DATE     BIGINT        NULL,  -- NULL = payable immediately
-    I_CUSTOMER_ID  VARCHAR(20)   COLLATE Latin1_General_100_BIN2 NOT NULL,
-    I_STATUS       VARCHAR(20)   COLLATE Latin1_General_100_BIN2 NOT NULL CONSTRAINT DF_T_INVOICE_H_STATUS DEFAULT ('DRAFT'),
-    I_CCY          VARCHAR(3)    COLLATE Latin1_General_100_BIN2 NOT NULL,
-    I_TOTAL_AMT    DECIMAL(19,4) NOT NULL CONSTRAINT DF_T_INVOICE_H_TOTAL_AMT DEFAULT (0),  -- stored total: sum of lines
-    I_CREATED_AT   BIGINT NOT NULL CONSTRAINT DF_T_INVOICE_H_CREATED_AT DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
-    I_UPDATED_AT   BIGINT NOT NULL CONSTRAINT DF_T_INVOICE_H_UPDATED_AT DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
-    CONSTRAINT PK_T_INVOICE_H PRIMARY KEY (I_INVOICE_ID),
-    CONSTRAINT FK_T_INVOICE_H_CUSTOMER FOREIGN KEY (I_CUSTOMER_ID)
-        REFERENCES M_CUSTOMER (I_CUSTOMER_ID) ON DELETE NO ACTION ON UPDATE NO ACTION,
-    CONSTRAINT CK_T_INVOICE_H_INVOICE_ID CHECK (DATALENGTH(I_INVOICE_ID) = 14
-        AND I_INVOICE_ID LIKE 'IV[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'),
-    CONSTRAINT CK_T_INVOICE_H_DUE_DATE CHECK (I_DUE_DATE % 86400 = 0),
-    CONSTRAINT CK_T_INVOICE_H_STATUS CHECK (I_STATUS IN ('DRAFT', 'COMPLETED', 'CANCELLED')),
-    CONSTRAINT CK_T_INVOICE_H_CCY CHECK (DATALENGTH(I_CCY) = 3 AND I_CCY LIKE '[A-Z][A-Z][A-Z]'),
-    CONSTRAINT CK_T_INVOICE_H_TOTAL_AMT CHECK (I_TOTAL_AMT >= 0)
+-- Master with times of day: wh + 4 digits
+CREATE TABLE m_warehouse (
+    i_warehouse_id     VARCHAR(20)   COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_warehouse_nm     NVARCHAR(200) NOT NULL,
+    i_open_time        INT           NOT NULL,  -- seconds after local midnight
+    i_close_time       INT           NOT NULL,
+    i_created_at       BIGINT        NOT NULL CONSTRAINT df_m_warehouse_created_at DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
+    i_created_func_nm  VARCHAR(100)  COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_created_by       VARCHAR(50)   COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_updated_at       BIGINT        NOT NULL CONSTRAINT df_m_warehouse_updated_at DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
+    i_updated_func_nm  VARCHAR(100)  COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_updated_by       VARCHAR(50)   COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_active           BIT           NOT NULL CONSTRAINT df_m_warehouse_active DEFAULT (1),
+    CONSTRAINT pk_m_warehouse PRIMARY KEY (i_warehouse_id),
+    CONSTRAINT ck_m_warehouse_warehouse_id CHECK (DATALENGTH(i_warehouse_id) = 6
+        AND i_warehouse_id LIKE 'wh[0-9][0-9][0-9][0-9]'),
+    CONSTRAINT ck_m_warehouse_open_time CHECK (i_open_time BETWEEN 0 AND 86399),
+    CONSTRAINT ck_m_warehouse_close_time CHECK (i_close_time BETWEEN 0 AND 86399)
+);
+
+-- Header, daily ID: inv + yyyymmdd + 6 digits
+CREATE TABLE t_invoice_h (
+    i_invoice_id       VARCHAR(20)    COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_invoice_at       BIGINT         NOT NULL,
+    i_due_date         BIGINT         NULL,  -- NULL = payable immediately
+    i_customer_id      VARCHAR(20)    COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_status           VARCHAR(20)    COLLATE Latin1_General_100_BIN2 NOT NULL CONSTRAINT df_t_invoice_h_status DEFAULT ('draft'),
+    i_ccy              VARCHAR(3)     COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_total_amt        DECIMAL(19,4)  NOT NULL CONSTRAINT df_t_invoice_h_total_amt DEFAULT (0),  -- stored total: sum of active lines
+    i_note             NVARCHAR(2000) NULL,  -- NULL = no note
+    i_created_at       BIGINT         NOT NULL CONSTRAINT df_t_invoice_h_created_at DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
+    i_created_func_nm  VARCHAR(100)   COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_created_by       VARCHAR(50)    COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_updated_at       BIGINT         NOT NULL CONSTRAINT df_t_invoice_h_updated_at DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
+    i_updated_func_nm  VARCHAR(100)   COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_updated_by       VARCHAR(50)    COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_active           BIT            NOT NULL CONSTRAINT df_t_invoice_h_active DEFAULT (1),
+    CONSTRAINT pk_t_invoice_h PRIMARY KEY (i_invoice_id),
+    CONSTRAINT fk_t_invoice_h_customer FOREIGN KEY (i_customer_id)
+        REFERENCES m_customer (i_customer_id) ON DELETE NO ACTION ON UPDATE NO ACTION,
+    CONSTRAINT ck_t_invoice_h_invoice_id CHECK (DATALENGTH(i_invoice_id) = 17
+        AND i_invoice_id LIKE 'inv[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'),
+    CONSTRAINT ck_t_invoice_h_due_date CHECK (i_due_date % 86400 = 0),
+    CONSTRAINT ck_t_invoice_h_status CHECK (i_status IN ('draft', 'completed', 'cancelled')),
+    CONSTRAINT ck_t_invoice_h_ccy CHECK (DATALENGTH(i_ccy) = 3 AND i_ccy LIKE '[A-Z][A-Z][A-Z]'),
+    CONSTRAINT ck_t_invoice_h_total_amt CHECK (i_total_amt >= 0)
 );
 -- FK index; also serves "a customer's invoices by date"
-CREATE INDEX IX_T_INVOICE_H_CUSTOMER_ID_INVOICE_AT ON T_INVOICE_H (I_CUSTOMER_ID, I_INVOICE_AT);
+CREATE INDEX ix_t_invoice_h_customer_id_invoice_at ON t_invoice_h (i_customer_id, i_invoice_at);
 
--- Detail: composite PK (header ID, I_INTERNAL_NO)
-CREATE TABLE T_INVOICE_D (
-    I_INVOICE_ID   VARCHAR(20)   COLLATE Latin1_General_100_BIN2 NOT NULL,
-    I_INTERNAL_NO  VARCHAR(6)    COLLATE Latin1_General_100_BIN2 NOT NULL,
-    I_PRODUCT_ID   VARCHAR(20)   COLLATE Latin1_General_100_BIN2 NOT NULL,
-    I_DESC         NVARCHAR(500) NOT NULL,  -- snapshot of product name
-    I_QTY          DECIMAL(19,4) NOT NULL,
-    I_UNIT_PRICE   DECIMAL(19,4) NOT NULL,  -- snapshot at sale time
-    I_TAX_RATE     DECIMAL(9,6)  NOT NULL,  -- snapshot at sale time
-    I_LINE_AMT     DECIMAL(19,4) NOT NULL,
-    I_CREATED_AT   BIGINT NOT NULL CONSTRAINT DF_T_INVOICE_D_CREATED_AT DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
-    I_UPDATED_AT   BIGINT NOT NULL CONSTRAINT DF_T_INVOICE_D_UPDATED_AT DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
-    CONSTRAINT PK_T_INVOICE_D PRIMARY KEY (I_INVOICE_ID, I_INTERNAL_NO),
-    CONSTRAINT FK_T_INVOICE_D_INVOICE_H FOREIGN KEY (I_INVOICE_ID)
-        REFERENCES T_INVOICE_H (I_INVOICE_ID) ON DELETE NO ACTION ON UPDATE NO ACTION,
-    CONSTRAINT FK_T_INVOICE_D_PRODUCT FOREIGN KEY (I_PRODUCT_ID)
-        REFERENCES M_PRODUCT (I_PRODUCT_ID) ON DELETE NO ACTION ON UPDATE NO ACTION,
-    CONSTRAINT CK_T_INVOICE_D_INTERNAL_NO CHECK (DATALENGTH(I_INTERNAL_NO) = 6
-        AND I_INTERNAL_NO LIKE '[0-9][0-9][0-9][0-9][0-9][0-9]' AND I_INTERNAL_NO <> '000000'),
-    CONSTRAINT CK_T_INVOICE_D_QTY CHECK (I_QTY > 0),
-    CONSTRAINT CK_T_INVOICE_D_UNIT_PRICE CHECK (I_UNIT_PRICE >= 0),
-    CONSTRAINT CK_T_INVOICE_D_TAX_RATE CHECK (I_TAX_RATE BETWEEN 0 AND 1)
+-- Detail: composite PK (header ID, i_internal_no)
+CREATE TABLE t_invoice_d (
+    i_invoice_id       VARCHAR(20)   COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_internal_no      VARCHAR(6)    COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_product_id       VARCHAR(20)   COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_desc             NVARCHAR(500) NOT NULL,  -- snapshot of the product name
+    i_qty              DECIMAL(19,4) NOT NULL,
+    i_unit_price       DECIMAL(19,4) NOT NULL,  -- snapshot at sale time
+    i_tax_rate         DECIMAL(9,6)  NOT NULL,  -- snapshot at sale time
+    i_line_amt         DECIMAL(19,4) NOT NULL,
+    i_created_at       BIGINT        NOT NULL CONSTRAINT df_t_invoice_d_created_at DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
+    i_created_func_nm  VARCHAR(100)  COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_created_by       VARCHAR(50)   COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_updated_at       BIGINT        NOT NULL CONSTRAINT df_t_invoice_d_updated_at DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
+    i_updated_func_nm  VARCHAR(100)  COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_updated_by       VARCHAR(50)   COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_active           BIT           NOT NULL CONSTRAINT df_t_invoice_d_active DEFAULT (1),
+    CONSTRAINT pk_t_invoice_d PRIMARY KEY (i_invoice_id, i_internal_no),
+    CONSTRAINT fk_t_invoice_d_invoice_h FOREIGN KEY (i_invoice_id)
+        REFERENCES t_invoice_h (i_invoice_id) ON DELETE NO ACTION ON UPDATE NO ACTION,
+    CONSTRAINT fk_t_invoice_d_product FOREIGN KEY (i_product_id)
+        REFERENCES m_product (i_product_id) ON DELETE NO ACTION ON UPDATE NO ACTION,
+    CONSTRAINT ck_t_invoice_d_internal_no CHECK (DATALENGTH(i_internal_no) = 6
+        AND i_internal_no LIKE '[0-9][0-9][0-9][0-9][0-9][0-9]' AND i_internal_no <> '000000'),
+    CONSTRAINT ck_t_invoice_d_qty CHECK (i_qty > 0),
+    CONSTRAINT ck_t_invoice_d_unit_price CHECK (i_unit_price >= 0),
+    CONSTRAINT ck_t_invoice_d_tax_rate CHECK (i_tax_rate BETWEEN 0 AND 1)
 );
--- FK to header is covered by the PK's leading column; FK to product needs its own index
-CREATE INDEX IX_T_INVOICE_D_PRODUCT_ID ON T_INVOICE_D (I_PRODUCT_ID);
+-- FK to the header is covered by the PK's leading column; FK to the product needs its own index
+CREATE INDEX ix_t_invoice_d_product_id ON t_invoice_d (i_product_id);
 
 -- Standalone transaction: one record per event, role FKs to the same master
-CREATE TABLE T_STOCK_MOVE (
-    I_STOCK_MOVE_ID      VARCHAR(20)   COLLATE Latin1_General_100_BIN2 NOT NULL,
-    I_MOVE_AT            BIGINT        NOT NULL,
-    I_PRODUCT_ID         VARCHAR(20)   COLLATE Latin1_General_100_BIN2 NOT NULL,
-    I_FROM_WAREHOUSE_ID  VARCHAR(20)   COLLATE Latin1_General_100_BIN2 NULL,  -- NULL = received from outside
-    I_TO_WAREHOUSE_ID    VARCHAR(20)   COLLATE Latin1_General_100_BIN2 NULL,  -- NULL = shipped out
-    I_QTY                DECIMAL(19,4) NOT NULL,
-    I_CREATED_AT         BIGINT NOT NULL CONSTRAINT DF_T_STOCK_MOVE_CREATED_AT DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
-    I_UPDATED_AT         BIGINT NOT NULL CONSTRAINT DF_T_STOCK_MOVE_UPDATED_AT DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
-    CONSTRAINT PK_T_STOCK_MOVE PRIMARY KEY (I_STOCK_MOVE_ID),
-    CONSTRAINT FK_T_STOCK_MOVE_PRODUCT FOREIGN KEY (I_PRODUCT_ID)
-        REFERENCES M_PRODUCT (I_PRODUCT_ID) ON DELETE NO ACTION ON UPDATE NO ACTION,
-    CONSTRAINT FK_T_STOCK_MOVE_FROM_WAREHOUSE FOREIGN KEY (I_FROM_WAREHOUSE_ID)
-        REFERENCES M_WAREHOUSE (I_WAREHOUSE_ID) ON DELETE NO ACTION ON UPDATE NO ACTION,
-    CONSTRAINT FK_T_STOCK_MOVE_TO_WAREHOUSE FOREIGN KEY (I_TO_WAREHOUSE_ID)
-        REFERENCES M_WAREHOUSE (I_WAREHOUSE_ID) ON DELETE NO ACTION ON UPDATE NO ACTION,
-    CONSTRAINT CK_T_STOCK_MOVE_STOCK_MOVE_ID CHECK (DATALENGTH(I_STOCK_MOVE_ID) = 16
-        AND I_STOCK_MOVE_ID LIKE 'SM[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'),
-    CONSTRAINT CK_T_STOCK_MOVE_QTY CHECK (I_QTY > 0),
-    CONSTRAINT CK_T_STOCK_MOVE_WAREHOUSE CHECK (
-        (I_FROM_WAREHOUSE_ID IS NOT NULL OR I_TO_WAREHOUSE_ID IS NOT NULL)
-        AND (I_FROM_WAREHOUSE_ID IS NULL OR I_TO_WAREHOUSE_ID IS NULL OR I_FROM_WAREHOUSE_ID <> I_TO_WAREHOUSE_ID))
+CREATE TABLE t_stock_move (
+    i_stock_move_id      VARCHAR(20)   COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_move_at            BIGINT        NOT NULL,
+    i_product_id         VARCHAR(20)   COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_from_warehouse_id  VARCHAR(20)   COLLATE Latin1_General_100_BIN2 NULL,  -- NULL = received from outside
+    i_to_warehouse_id    VARCHAR(20)   COLLATE Latin1_General_100_BIN2 NULL,  -- NULL = shipped out
+    i_qty                DECIMAL(19,4) NOT NULL,
+    i_created_at         BIGINT        NOT NULL CONSTRAINT df_t_stock_move_created_at DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
+    i_created_func_nm    VARCHAR(100)  COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_created_by         VARCHAR(50)   COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_updated_at         BIGINT        NOT NULL CONSTRAINT df_t_stock_move_updated_at DEFAULT (DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME())),
+    i_updated_func_nm    VARCHAR(100)  COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_updated_by         VARCHAR(50)   COLLATE Latin1_General_100_BIN2 NOT NULL,
+    i_active             BIT           NOT NULL CONSTRAINT df_t_stock_move_active DEFAULT (1),
+    CONSTRAINT pk_t_stock_move PRIMARY KEY (i_stock_move_id),
+    CONSTRAINT fk_t_stock_move_product FOREIGN KEY (i_product_id)
+        REFERENCES m_product (i_product_id) ON DELETE NO ACTION ON UPDATE NO ACTION,
+    CONSTRAINT fk_t_stock_move_from_warehouse FOREIGN KEY (i_from_warehouse_id)
+        REFERENCES m_warehouse (i_warehouse_id) ON DELETE NO ACTION ON UPDATE NO ACTION,
+    CONSTRAINT fk_t_stock_move_to_warehouse FOREIGN KEY (i_to_warehouse_id)
+        REFERENCES m_warehouse (i_warehouse_id) ON DELETE NO ACTION ON UPDATE NO ACTION,
+    CONSTRAINT ck_t_stock_move_stock_move_id CHECK (DATALENGTH(i_stock_move_id) = 17
+        AND i_stock_move_id LIKE 'smv[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'),
+    CONSTRAINT ck_t_stock_move_qty CHECK (i_qty > 0),
+    CONSTRAINT ck_t_stock_move_warehouse CHECK (
+        (i_from_warehouse_id IS NOT NULL OR i_to_warehouse_id IS NOT NULL)
+        AND (i_from_warehouse_id IS NULL OR i_to_warehouse_id IS NULL OR i_from_warehouse_id <> i_to_warehouse_id))
 );
-CREATE INDEX IX_T_STOCK_MOVE_PRODUCT_ID_MOVE_AT ON T_STOCK_MOVE (I_PRODUCT_ID, I_MOVE_AT);
-CREATE INDEX IX_T_STOCK_MOVE_FROM_WAREHOUSE_ID ON T_STOCK_MOVE (I_FROM_WAREHOUSE_ID);
-CREATE INDEX IX_T_STOCK_MOVE_TO_WAREHOUSE_ID ON T_STOCK_MOVE (I_TO_WAREHOUSE_ID);
+CREATE INDEX ix_t_stock_move_product_id_move_at ON t_stock_move (i_product_id, i_move_at);
+CREATE INDEX ix_t_stock_move_from_warehouse_id ON t_stock_move (i_from_warehouse_id);
+CREATE INDEX ix_t_stock_move_to_warehouse_id ON t_stock_move (i_to_warehouse_id);
+GO
+
+-- Default read path: active rows only (D2)
+CREATE VIEW v_m_product AS SELECT * FROM m_product WHERE i_active = 1;
+GO
 ```
 
-## 6. ID generation
+## 6. ID generation and documents
 
-### Master ID from a sequence
-```sql
-INSERT INTO M_CUSTOMER (I_CUSTOMER_ID, I_CUSTOMER_NAME)
-VALUES ('CUS' + RIGHT('000000' + CAST(NEXT VALUE FOR SQ_M_CUSTOMER AS VARCHAR(6)), 6), N'บริษัท ตัวอย่าง จำกัด');
-```
-`MAXVALUE 999999 NO CYCLE` makes the sequence raise an error when it runs out, so the `RIGHT(...)` formatting can never cut digits off. A sequence may leave gaps after a rollback, which is acceptable for master IDs.
-
-### Document ID with a daily counter
-Run this inside the caller's transaction, so the counter and the document commit or roll back together. `CREATE PROCEDURE` must be the only statement in its batch, so put `GO` before and after it in scripts.
+### ID from the counter table
+Run the procedure inside the caller's transaction, so the counter and the row that uses the ID commit or roll back together. `CREATE PROCEDURE` must be the only statement in its batch, so scripts put `GO` before and after it.
 
 ```sql
-CREATE PROCEDURE P_NEXT_DOC_ID
-    @prefix   VARCHAR(4),
-    @biz_date DATE,          -- business date in the business time zone
-    @digits   TINYINT,       -- 4 for IV, 6 for SM
-    @doc_id   VARCHAR(20) OUTPUT
+CREATE PROCEDURE p_next_id
+    @abbr    VARCHAR(4),
+    @date    VARCHAR(8),    -- 'yyyymmdd', 'yyyymm' or '' in the business time zone
+    @digits  TINYINT,
+    @func_nm VARCHAR(100),
+    @by      VARCHAR(50),
+    @id      VARCHAR(20) OUTPUT
 AS
 BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
     IF @@TRANCOUNT = 0
-        THROW 50000, 'P_NEXT_DOC_ID must run inside the caller''s transaction.', 1;
+        THROW 50000, 'p_next_id must run inside the caller''s transaction.', 1;
 
-    DECLARE @seq_id VARCHAR(20) = @prefix + CONVERT(CHAR(8), @biz_date, 112);
+    DECLARE @seq_id VARCHAR(20) = @abbr + @date;
     DECLARE @now    BIGINT      = DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME());
-    DECLARE @n      INT;
+    DECLARE @n      BIGINT;
 
     -- UPDLOCK + HOLDLOCK also locks the key when the row does not exist yet,
-    -- so two sessions cannot both insert the first row for a day.
-    UPDATE M_DOC_SEQ WITH (UPDLOCK, HOLDLOCK)
-       SET @n = I_LAST_VAL = I_LAST_VAL + 1,
-           I_UPDATED_AT = @now
-     WHERE I_DOC_SEQ_ID = @seq_id;
+    -- so two sessions cannot both insert the first row for a period.
+    UPDATE m_id_seq WITH (UPDLOCK, HOLDLOCK)
+       SET @n = i_last_val = i_last_val + 1,
+           i_updated_at = @now, i_updated_func_nm = @func_nm, i_updated_by = @by
+     WHERE i_id_seq_id = @seq_id;
 
     IF @@ROWCOUNT = 0
     BEGIN
         SET @n = 1;
-        INSERT INTO M_DOC_SEQ (I_DOC_SEQ_ID, I_LAST_VAL, I_CREATED_AT, I_UPDATED_AT)
-        VALUES (@seq_id, @n, @now, @now);
+        INSERT INTO m_id_seq (i_id_seq_id, i_last_val,
+                              i_created_at, i_created_func_nm, i_created_by,
+                              i_updated_at, i_updated_func_nm, i_updated_by)
+        VALUES (@seq_id, @n, @now, @func_nm, @by, @now, @func_nm, @by);
     END;
 
-    IF @n >= POWER(10, @digits)
-        THROW 50001, 'Document counter exhausted for this prefix and date.', 1;
+    IF @n >= POWER(CAST(10 AS BIGINT), @digits)
+        THROW 50001, 'ID counter exhausted for this abbreviation and period.', 1;
 
-    SET @doc_id = @seq_id + RIGHT(REPLICATE('0', @digits) + CAST(@n AS VARCHAR(10)), @digits);
+    SET @id = @seq_id + RIGHT(REPLICATE('0', @digits) + CAST(@n AS VARCHAR(19)), @digits);
 END;
+GO
+```
+
+### Master rows
+```sql
+SET XACT_ABORT ON;
+BEGIN TRANSACTION;
+DECLARE @id VARCHAR(20);
+DECLARE @month VARCHAR(6) = LEFT(CONVERT(CHAR(8), CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'SE Asia Standard Time' AS DATE), 112), 6);
+
+EXEC p_next_id 'cus', '', 6, 'customer.create', 'usr000001', @id OUTPUT;
+INSERT INTO m_customer (i_customer_id, i_customer_nm,
+                        i_created_func_nm, i_created_by, i_updated_func_nm, i_updated_by)
+VALUES (@id, N'บริษัท ตัวอย่าง จำกัด', 'customer.create', 'usr000001', 'customer.create', 'usr000001');
+
+EXEC p_next_id 'prd', @month, 4, 'product.create', 'usr000001', @id OUTPUT;
+INSERT INTO m_product (i_product_id, i_sku, i_product_nm, i_unit_price,
+                       i_created_func_nm, i_created_by, i_updated_func_nm, i_updated_by)
+VALUES (@id, 'SKU-001', N'商品 A', 100, 'product.create', 'usr000001', 'product.create', 'usr000001');
+
+EXEC p_next_id 'wh', '', 4, 'warehouse.create', 'usr000001', @id OUTPUT;
+INSERT INTO m_warehouse (i_warehouse_id, i_warehouse_nm, i_open_time, i_close_time,
+                         i_created_func_nm, i_created_by, i_updated_func_nm, i_updated_by)
+VALUES (@id, N'東京倉庫', 30600, 64800, 'warehouse.create', 'usr000001', 'warehouse.create', 'usr000001');
+COMMIT TRANSACTION;
+GO
+```
+
+**Optional sequence** for an ID without a date part (gaps after a rollback are acceptable):
+
+```sql
+CREATE SEQUENCE sq_m_customer AS INT START WITH 1 MINVALUE 1 MAXVALUE 999999 NO CYCLE;
+-- 'cus' + RIGHT('000000' + CAST(NEXT VALUE FOR sq_m_customer AS VARCHAR(6)), 6)
 ```
 
 ### Creating a Header/Detail document
@@ -256,26 +323,39 @@ SET XACT_ABORT ON;
 BEGIN TRANSACTION;
 
 DECLARE @invoice_id VARCHAR(20);
-DECLARE @now BIGINT = DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME());
-DECLARE @biz_date DATE = CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'SE Asia Standard Time' AS DATE);
+DECLARE @func VARCHAR(100) = 'invoice.create', @by VARCHAR(50) = 'usr000001';
+DECLARE @now  BIGINT = DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME());
+DECLARE @day  VARCHAR(8) = CONVERT(CHAR(8), CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'SE Asia Standard Time' AS DATE), 112);
 
-EXEC P_NEXT_DOC_ID @prefix = 'IV', @biz_date = @biz_date, @digits = 4, @doc_id = @invoice_id OUTPUT;
+EXEC p_next_id 'inv', @day, 6, @func, @by, @invoice_id OUTPUT;
 
-INSERT INTO T_INVOICE_H (I_INVOICE_ID, I_INVOICE_AT, I_CUSTOMER_ID, I_CCY)
-VALUES (@invoice_id, @now, 'CUS000001', 'THB');
+INSERT INTO t_invoice_h (i_invoice_id, i_invoice_at, i_customer_id, i_ccy,
+                         i_created_at, i_created_func_nm, i_created_by,
+                         i_updated_at, i_updated_func_nm, i_updated_by)
+SELECT @invoice_id, @now, c.i_customer_id, 'THB', @now, @func, @by, @now, @func, @by
+  FROM m_customer c
+ WHERE c.i_customer_id = 'cus000001' AND c.i_active = 1;   -- never reference an inactive parent
 
--- The application numbers lines 000001, 000002, ... and copies price, tax and name (H3)
-INSERT INTO T_INVOICE_D (I_INVOICE_ID, I_INTERNAL_NO, I_PRODUCT_ID, I_DESC, I_QTY, I_UNIT_PRICE, I_TAX_RATE, I_LINE_AMT)
-SELECT @invoice_id, '000001', P.I_PRODUCT_ID, P.I_PRODUCT_NAME, 2, P.I_UNIT_PRICE, 0.07, 2 * P.I_UNIT_PRICE
-  FROM M_PRODUCT P
- WHERE P.I_PRODUCT_ID = 'PRD000001' AND P.I_DELETED_AT IS NULL;
+-- Lines are numbered 000001, 000002, ...; price, tax and name are copied (H3)
+INSERT INTO t_invoice_d (i_invoice_id, i_internal_no, i_product_id, i_desc,
+                         i_qty, i_unit_price, i_tax_rate, i_line_amt,
+                         i_created_at, i_created_func_nm, i_created_by,
+                         i_updated_at, i_updated_func_nm, i_updated_by)
+SELECT TOP (1) @invoice_id, '000001', p.i_product_id, p.i_product_nm,
+       2, p.i_unit_price, 0.07, 2 * p.i_unit_price,
+       @now, @func, @by, @now, @func, @by
+  FROM v_m_product p
+ ORDER BY p.i_product_id;
 
-UPDATE T_INVOICE_H
-   SET I_TOTAL_AMT = (SELECT ISNULL(SUM(I_LINE_AMT), 0) FROM T_INVOICE_D WHERE I_INVOICE_ID = @invoice_id),
-       I_UPDATED_AT = @now
- WHERE I_INVOICE_ID = @invoice_id;
+-- Recalculate the stored total from active lines, in the same transaction
+UPDATE t_invoice_h
+   SET i_total_amt = (SELECT ISNULL(SUM(i_line_amt), 0) FROM t_invoice_d
+                       WHERE i_invoice_id = @invoice_id AND i_active = 1),
+       i_updated_at = @now, i_updated_func_nm = @func, i_updated_by = @by
+ WHERE i_invoice_id = @invoice_id;
 
 COMMIT TRANSACTION;
+GO
 ```
 
 ### Adding a line to an existing document
@@ -283,44 +363,66 @@ COMMIT TRANSACTION;
 SET XACT_ABORT ON;
 BEGIN TRANSACTION;
 
-DECLARE @invoice_id VARCHAR(20) = 'IV202605030001';
+DECLARE @invoice_id VARCHAR(20) = (SELECT MIN(i_invoice_id) FROM t_invoice_h);
 DECLARE @locked VARCHAR(20), @next INT;
 
 -- 1. Lock the header first (fixed lock order: header, then details)
-SELECT @locked = I_INVOICE_ID
-  FROM T_INVOICE_H WITH (UPDLOCK, HOLDLOCK)
- WHERE I_INVOICE_ID = @invoice_id AND I_STATUS = 'DRAFT';
+SELECT @locked = i_invoice_id
+  FROM t_invoice_h WITH (UPDLOCK, HOLDLOCK)
+ WHERE i_invoice_id = @invoice_id AND i_status = 'draft' AND i_active = 1;
 IF @locked IS NULL
-    THROW 50002, 'Invoice not found or not in DRAFT status.', 1;
+    THROW 50002, 'Invoice not found, not active or not in draft status.', 1;
 
--- 2. Next line number = highest + 1 (zero-padded, so MAX on the string is correct)
-SELECT @next = ISNULL(CAST(MAX(I_INTERNAL_NO) AS INT), 0) + 1
-  FROM T_INVOICE_D
- WHERE I_INVOICE_ID = @invoice_id;
+-- 2. Next line number = highest + 1, counting inactive lines too (numbers are never reused)
+SELECT @next = ISNULL(MAX(CAST(i_internal_no AS INT)), 0) + 1
+  FROM t_invoice_d
+ WHERE i_invoice_id = @invoice_id;
 IF @next > 999999
     THROW 50003, 'Line number limit reached.', 1;
 
-INSERT INTO T_INVOICE_D (I_INVOICE_ID, I_INTERNAL_NO, I_PRODUCT_ID, I_DESC, I_QTY, I_UNIT_PRICE, I_TAX_RATE, I_LINE_AMT)
-VALUES (@invoice_id, RIGHT('000000' + CAST(@next AS VARCHAR(6)), 6), 'PRD000002', N'Product B', 1, 150, 0.07, 150);
+INSERT INTO t_invoice_d (i_invoice_id, i_internal_no, i_product_id, i_desc,
+                         i_qty, i_unit_price, i_tax_rate, i_line_amt,
+                         i_created_func_nm, i_created_by, i_updated_func_nm, i_updated_by)
+VALUES (@invoice_id, RIGHT('000000' + CAST(@next AS VARCHAR(7)), 6),
+        (SELECT MIN(i_product_id) FROM v_m_product), N'Product B', 1, 150, 0.07, 150,
+        'invoice.add_line', 'usr000001', 'invoice.add_line', 'usr000001');
 
 COMMIT TRANSACTION;
+GO
 ```
 
-## 7. Unique codes on soft-deleted tables
-Use a filtered unique index, `CREATE UNIQUE INDEX UQ_… ON … (…) WHERE I_DELETED_AT IS NULL`, as on `M_PRODUCT` above. Every session that writes to the table needs `SET ANSI_NULLS ON` and `QUOTED_IDENTIFIER ON`, which are the defaults.
+### Removing a line (soft delete)
+```sql
+UPDATE t_invoice_d
+   SET i_active = 0,
+       i_updated_at = DATEDIFF_BIG(SECOND, '19700101', SYSUTCDATETIME()),
+       i_updated_func_nm = 'invoice.remove_line', i_updated_by = 'usr000001'
+ WHERE i_invoice_id = (SELECT MIN(i_invoice_id) FROM t_invoice_h) AND i_internal_no = '000002';
+GO
+```
+Recalculate the header total in the same transaction, as above.
+
+## 7. Unique codes among active rows only
+To let a code be reused after its row is deactivated, replace the plain unique constraint with a filtered unique index:
+
+```sql
+ALTER TABLE m_product DROP CONSTRAINT uq_m_product_sku;
+CREATE UNIQUE INDEX uq_m_product_sku ON m_product (i_sku) WHERE i_active = 1;
+GO
+```
+Every session that writes to the table needs `SET ANSI_NULLS ON` and `QUOTED_IDENTIFIER ON`, which are the defaults.
 
 ## 8. Performance notes
-- **The PK is clustered by default.** Prefix + date + counter IDs increase in insert order, so new rows go at the end of the index. Random UUID strings would scatter inserts and fragment the index.
-- **Indexes are not created for FKs automatically.** Create the `IX_` indexes yourself (K6).
-- **Send ID parameters as `VARCHAR`, not `NVARCHAR`.** Many drivers send strings as `NVARCHAR` by default. Comparing an `NVARCHAR` parameter with a `VARCHAR` ID column forces a conversion that can turn an index seek into a full scan. Set the parameter type explicitly:
-  - .NET: `SqlDbType.VarChar`
-  - JDBC: `sendStringParametersAsUnicode=false` for ID-heavy workloads, after checking that it doesn't affect Unicode text columns
+- **The PK is clustered by default.** Abbreviation + date + counter IDs increase in insert order, so new rows go at the end of the index. Random UUID strings would scatter inserts and fragment the index.
+- **Indexes are not created for FKs automatically.** Create the `ix_` indexes yourself (K6).
+- **Send ID parameters as `VARCHAR`, not `NVARCHAR`.** Many drivers send strings as `NVARCHAR` by default. Comparing an `NVARCHAR` parameter with a `VARCHAR` ID column forces a conversion that can turn an index seek into a full scan. Set the parameter type explicitly (.NET: `SqlDbType.VarChar`). JDBC's `sendStringParametersAsUnicode=false` applies to every string parameter, including Unicode text, so set the type per parameter instead.
+- **Send text parameters as `NVARCHAR`.** A Thai or Japanese value sent as `VARCHAR` is converted to `?` before it reaches the column.
 - **Consider `READ_COMMITTED_SNAPSHOT ON`** so readers don't block writers. Writers still lock as shown above.
-- **Range queries on `_AT` integers use the index.** Never wrap the column in `DATEADD` or other functions inside a `WHERE`.
+- **Range queries on `_at` integers use the index.** Never wrap the column in `DATEADD` or other functions inside a `WHERE`.
 
 ## 9. Catalog audit query
 
-This query lists the violations of the rules that can be checked from the system catalog: N1, N2, N4, N5, N6, K1, K2, K3, K5, K6, U1, D1, D2 and D3. Run it in the database to check; it covers the caller's default schema. An empty result means every automated check passed. The remaining rules need a manual review; see `../schema-validation.md`.
+This query lists violations of the rules that can be checked from the catalog: N1, N2, N4, N5, N6, K1, K2, K3, K5, K6, U1, D1, D2, D3 and D4. Run it in the database to check; it covers the caller's default schema. An empty result means every automated check passed; the remaining rules need the manual review in `../schema-validation.md`. The name pattern is for a lowercase project; in an uppercase project replace `a-z` with `A-Z` and the prefixes with their uppercase form.
 
 ```sql
 WITH t AS (
@@ -329,7 +431,8 @@ WITH t AS (
      WHERE is_ms_shipped = 0 AND schema_id = SCHEMA_ID()
 ), cols AS (
     SELECT t.object_id, t.tbl, CAST(c.name AS NVARCHAR(128)) COLLATE Latin1_General_100_BIN2 AS col,
-           c.column_id, c.max_length, c.is_nullable, c.user_type_id, c.collation_name, CAST(ty.name AS NVARCHAR(128)) COLLATE Latin1_General_100_BIN2 AS typ,
+           c.max_length, c.is_nullable, c.collation_name,
+           CAST(ty.name AS NVARCHAR(128)) COLLATE Latin1_General_100_BIN2 AS typ,
            CASE WHEN EXISTS (SELECT 1 FROM sys.index_columns ic
                                JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id
                               WHERE i.is_primary_key = 1 AND ic.object_id = c.object_id AND ic.column_id = c.column_id)
@@ -339,38 +442,44 @@ WITH t AS (
       FROM t
       JOIN sys.columns c ON c.object_id = t.object_id
       JOIN sys.types ty ON ty.user_type_id = c.user_type_id
+), audit AS (
+    SELECT c, kind FROM (VALUES ('i_created_at', 'bigint'), ('i_created_func_nm', 'varchar'), ('i_created_by', 'varchar'),
+                                ('i_updated_at', 'bigint'), ('i_updated_func_nm', 'varchar'), ('i_updated_by', 'varchar'),
+                                ('i_active', 'bit')) AS v(c, kind)
 ), obj AS (   -- constraints and indexes with their expected prefix
     SELECT t.tbl, CAST(k.name AS NVARCHAR(128)) COLLATE Latin1_General_100_BIN2 AS name,
-           CASE k.type WHEN 'PK' THEN 'PK_' ELSE 'UQ_' END AS pfx, k.type AS kind
+           CASE k.type WHEN 'PK' THEN 'pk_' ELSE 'uq_' END AS pfx, CAST(k.type AS VARCHAR(2)) AS kind
       FROM sys.key_constraints k JOIN t ON t.object_id = k.parent_object_id
     UNION ALL
-    SELECT t.tbl, CAST(f.name AS NVARCHAR(128)) COLLATE Latin1_General_100_BIN2, 'FK_', 'F'
+    SELECT t.tbl, CAST(f.name AS NVARCHAR(128)) COLLATE Latin1_General_100_BIN2, 'fk_', 'F'
       FROM sys.foreign_keys f JOIN t ON t.object_id = f.parent_object_id
     UNION ALL
-    SELECT t.tbl, CAST(c.name AS NVARCHAR(128)) COLLATE Latin1_General_100_BIN2, 'CK_', 'C'
+    SELECT t.tbl, CAST(c.name AS NVARCHAR(128)) COLLATE Latin1_General_100_BIN2, 'ck_', 'C'
       FROM sys.check_constraints c JOIN t ON t.object_id = c.parent_object_id
     UNION ALL
-    SELECT t.tbl, CAST(d.name AS NVARCHAR(128)) COLLATE Latin1_General_100_BIN2, 'DF_', 'D'
+    SELECT t.tbl, CAST(d.name AS NVARCHAR(128)) COLLATE Latin1_General_100_BIN2, 'df_', 'D'
       FROM sys.default_constraints d JOIN t ON t.object_id = d.parent_object_id
     UNION ALL
     SELECT t.tbl, CAST(i.name AS NVARCHAR(128)) COLLATE Latin1_General_100_BIN2,
-           CASE WHEN i.is_unique = 1 THEN 'UQ_' ELSE 'IX_' END, 'I'
+           CASE WHEN i.is_unique = 1 THEN 'uq_' ELSE 'ix_' END, 'I'
       FROM sys.indexes i JOIN t ON t.object_id = i.object_id
      WHERE i.index_id > 0 AND i.is_primary_key = 0 AND i.is_unique_constraint = 0
 )
-SELECT 'N1' AS rule_id, tbl AS object_name, 'name must be uppercase A-Z0-9_, start with a letter, no __ or trailing _' AS problem
-  FROM t WHERE tbl LIKE '%[^A-Z0-9_]%' OR tbl NOT LIKE '[A-Z]%' OR tbl LIKE '%[_][_]%' OR tbl LIKE '%[_]'
-UNION ALL SELECT 'N2', tbl, 'table must start with M_ or T_' FROM t WHERE LEFT(tbl, 2) NOT IN ('M_', 'T_')
+SELECT 'N1' AS rule_id, tbl AS object_name, 'name must be a-z0-9_, start with a letter, no __ or trailing _' AS problem
+  FROM t WHERE tbl LIKE '%[^a-z0-9_]%' OR tbl NOT LIKE '[a-z]%' OR tbl LIKE '%[_][_]%' OR tbl LIKE '%[_]'
+UNION ALL SELECT 'N2', tbl, 'table must start with m_ or t_' FROM t WHERE LEFT(tbl, 2) NOT IN ('m_', 't_')
 UNION ALL SELECT 'N5', tbl, 'table name longer than 30' FROM t WHERE LEN(tbl) > 30
-UNION ALL SELECT 'N1', tbl + '.' + col, 'name must be uppercase A-Z0-9_, start with a letter, no __ or trailing _'
-  FROM cols WHERE col LIKE '%[^A-Z0-9_]%' OR col NOT LIKE '[A-Z]%' OR col LIKE '%[_][_]%' OR col LIKE '%[_]'
-UNION ALL SELECT 'N4', tbl + '.' + col, 'column must start with I_' FROM cols WHERE LEFT(col, 2) <> 'I_'
+UNION ALL SELECT 'N1', tbl + '.' + col, 'name must be a-z0-9_, start with a letter, no __ or trailing _'
+  FROM cols WHERE col LIKE '%[^a-z0-9_]%' OR col NOT LIKE '[a-z]%' OR col LIKE '%[_][_]%' OR col LIKE '%[_]'
+UNION ALL SELECT 'N4', tbl + '.' + col, 'column must start with i_' FROM cols WHERE LEFT(col, 2) <> 'i_'
 UNION ALL SELECT 'N5', tbl + '.' + col, 'column name longer than 30' FROM cols WHERE LEN(col) > 30
 UNION ALL SELECT 'K1', tbl + '.' + col, 'key column must be VARCHAR, is ' + typ
   FROM cols WHERE is_key = 1 AND typ <> 'varchar'
 UNION ALL SELECT 'K2', tbl + '.' + col, 'key column must use Latin1_General_100_BIN2'
   FROM cols WHERE is_key = 1 AND typ = 'varchar' AND ISNULL(collation_name, '') <> 'Latin1_General_100_BIN2'
-UNION ALL SELECT 'K3', CAST(f.name AS NVARCHAR(128)) COLLATE Latin1_General_100_BIN2, 'FK column ' + CAST(pc.name AS NVARCHAR(128)) COLLATE Latin1_General_100_BIN2 + ' differs from ' + CAST(rc.name AS NVARCHAR(128)) COLLATE Latin1_General_100_BIN2 + ' in type, length or collation'
+UNION ALL SELECT 'K3', CAST(f.name AS NVARCHAR(128)) COLLATE Latin1_General_100_BIN2,
+       'FK column ' + CAST(pc.name AS NVARCHAR(128)) COLLATE Latin1_General_100_BIN2 + ' differs from '
+       + CAST(rc.name AS NVARCHAR(128)) COLLATE Latin1_General_100_BIN2 + ' in type, length or collation'
   FROM sys.foreign_keys f
   JOIN t ON t.object_id = f.parent_object_id
   JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = f.object_id
@@ -396,18 +505,20 @@ UNION ALL SELECT 'K6', CAST(f.name AS NVARCHAR(128)) COLLATE Latin1_General_100_
                            AND ic.key_ordinal BETWEEN 1 AND (SELECT COUNT(*) FROM sys.foreign_key_columns x
                                                               WHERE x.constraint_object_id = f.object_id))))
 UNION ALL SELECT 'U1', tbl + '.' + col, 'date/time type not allowed: ' + typ
-  FROM cols WHERE typ IN ('date', 'datetime', 'datetime2', 'smalldatetime', 'datetimeoffset', 'time')
-UNION ALL SELECT 'U1', tbl + '.' + col, '_AT/_DATE column must be BIGINT, is ' + typ
-  FROM cols WHERE (col LIKE '%[_]AT' OR col LIKE '%[_]DATE') AND typ <> 'bigint'
-UNION ALL SELECT 'D1', t.tbl, 'missing ' + v.c
-  FROM t CROSS JOIN (VALUES ('I_CREATED_AT'), ('I_UPDATED_AT')) AS v(c)
- WHERE NOT EXISTS (SELECT 1 FROM cols WHERE cols.object_id = t.object_id AND cols.col = v.c)
-UNION ALL SELECT 'D1', tbl + '.' + col, 'audit column must be NOT NULL'
-  FROM cols WHERE col IN ('I_CREATED_AT', 'I_UPDATED_AT') AND is_nullable = 1
-UNION ALL SELECT 'D2', tbl + '.' + col, 'floating-point or money type: ' + typ
+  FROM cols WHERE typ IN ('date', 'datetime', 'datetime2', 'smalldatetime', 'datetimeoffset', 'time', 'timestamp')
+UNION ALL SELECT 'U1', tbl + '.' + col, '_at/_date column must be BIGINT, is ' + typ
+  FROM cols WHERE (col LIKE '%[_]at' OR col LIKE '%[_]date') AND typ <> 'bigint'
+UNION ALL SELECT CASE WHEN a.c = 'i_active' THEN 'D2' ELSE 'D1' END, t.tbl, 'missing ' + a.c
+  FROM t CROSS JOIN audit a
+ WHERE NOT EXISTS (SELECT 1 FROM cols WHERE cols.object_id = t.object_id AND cols.col = a.c)
+UNION ALL SELECT CASE WHEN a.c = 'i_active' THEN 'D2' ELSE 'D1' END, cols.tbl + '.' + cols.col,
+       'must be NOT NULL ' + a.kind + ', is ' + cols.typ + CASE WHEN cols.is_nullable = 1 THEN ' NULL' ELSE '' END
+  FROM cols JOIN audit a ON a.c = cols.col
+ WHERE cols.is_nullable = 1 OR cols.typ <> a.kind
+UNION ALL SELECT 'D3', tbl + '.' + col, 'flag must be NOT NULL BIT, is ' + typ + CASE WHEN is_nullable = 1 THEN ' NULL' ELSE '' END
+  FROM cols WHERE (col LIKE 'i[_]is[_]%' OR col LIKE 'i[_]has[_]%') AND (typ <> 'bit' OR is_nullable = 1)
+UNION ALL SELECT 'D4', tbl + '.' + col, 'floating-point or money type: ' + typ
   FROM cols WHERE typ IN ('float', 'real', 'money', 'smallmoney')
-UNION ALL SELECT 'D3', tbl + '.' + col, 'flag must be CHAR(1), is ' + typ
-  FROM cols WHERE (col LIKE 'I[_]IS[_]%' OR col LIKE 'I[_]HAS[_]%') AND NOT (typ = 'char' AND max_length = 1)
 UNION ALL SELECT 'N6', name, 'name must start with ' + pfx + tbl + CASE WHEN kind = 'PK' THEN '' ELSE '_' END
   FROM obj
  WHERE (kind = 'PK' AND name <> pfx + tbl)
